@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://*.supabase.co;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://*.supabase.co https://cdn.jsdelivr.net;">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KC Homeopathics — Catálogo Natural</title>
@@ -539,7 +539,7 @@ footer{background:linear-gradient(135deg,#0d2b0d,#1a3a1a);
 // ═══════════════════════════════════════════════════════════════
 const SUPABASE_URL    = 'https://adzwkeqfeltcavsdrblb.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_LgGAmfRkYZ20FWc9jET95g_RIf9S3rL';
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Cache en memoria de productos (se sincroniza con Supabase)
 let _productsCache = [];
@@ -585,7 +585,7 @@ document.addEventListener('DOMContentLoaded', function(){
   if(wmL) wmL.src = LOGO_URL;
   if(wmR) wmR.src = LOGO_URL;
 });
-const ADMIN_HASH = 'Skateone1!'; // SHA-256
+const ADMIN_HASH = 'dc6190a0c021b83c71de9ccbe1f7043e240e21525fe089114807a1d398c5c9f7'; // SHA-256
 let qty = 1;
 let currentProduct = null;
 let editingId = null;
@@ -645,7 +645,7 @@ const DEFAULT_PRODUCTS = [
 // Carga inicial: trae productos del backend; si no hay, inserta los DEFAULT
 async function loadProductsFromBackend(){
   try{
-    const { data, error } = await supabase
+    const { data, error } = await sb
       .from('products')
       .select('*')
       .order('created_at', { ascending: true });
@@ -653,7 +653,7 @@ async function loadProductsFromBackend(){
 
     if(!data || data.length === 0){
       // Primera vez: poblar la tabla con productos por defecto
-      const { error: insErr } = await supabase.from('products').insert(DEFAULT_PRODUCTS);
+      const { error: insErr } = await sb.from('products').insert(DEFAULT_PRODUCTS);
       if(insErr) throw insErr;
       _productsCache = [...DEFAULT_PRODUCTS];
     } else {
@@ -661,7 +661,7 @@ async function loadProductsFromBackend(){
     }
 
     // Cargar imágenes asociadas
-    const { data: imgs } = await supabase.from('product_images').select('*');
+    const { data: imgs } = await sb.from('product_images').select('*');
     _imagesCache = {};
     (imgs||[]).forEach(r => { _imagesCache[r.product_id] = r.image_url; });
 
@@ -682,7 +682,7 @@ function getProducts(){
 // Guardar UN producto (insertar o actualizar)
 async function saveProductBackend(product){
   try{
-    const { error } = await supabase
+    const { error } = await sb
       .from('products')
       .upsert(product, { onConflict: 'id' });
     if(error) throw error;
@@ -697,8 +697,8 @@ async function saveProductBackend(product){
 // Eliminar producto del backend
 async function deleteProductBackend(id){
   try{
-    await supabase.from('product_images').delete().eq('product_id', id);
-    const { error } = await supabase.from('products').delete().eq('id', id);
+    await sb.from('product_images').delete().eq('product_id', id);
+    const { error } = await sb.from('products').delete().eq('id', id);
     if(error) throw error;
     return true;
   } catch(err){
@@ -755,17 +755,17 @@ async function saveCustomImage(productId, dataUrl){
     const path = `${productId}-${Date.now()}.${ext}`;
 
     // Subir al bucket "product-images"
-    const { error: upErr } = await supabase.storage
+    const { error: upErr } = await sb.storage
       .from('product-images')
       .upload(path, blob, { upsert: true, contentType: blob.type });
     if(upErr) throw upErr;
 
     // Obtener URL pública
-    const { data: pub } = supabase.storage.from('product-images').getPublicUrl(path);
+    const { data: pub } = sb.storage.from('product-images').getPublicUrl(path);
     const url = pub.publicUrl;
 
     // Guardar relación producto ↔ imagen
-    const { error: dbErr } = await supabase
+    const { error: dbErr } = await sb
       .from('product_images')
       .upsert({ product_id: productId, image_url: url }, { onConflict: 'product_id' });
     if(dbErr) throw dbErr;
@@ -781,7 +781,7 @@ async function saveCustomImage(productId, dataUrl){
 
 async function deleteCustomImage(productId){
   try{
-    await supabase.from('product_images').delete().eq('product_id', productId);
+    await sb.from('product_images').delete().eq('product_id', productId);
     delete _imagesCache[productId];
   } catch(err){
     console.error('Error eliminando imagen:', err);
