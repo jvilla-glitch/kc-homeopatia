@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com;">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: blob: https://*.supabase.co; connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com https://*.supabase.co;">
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KC Homeopathics — Catálogo Natural</title>
@@ -532,6 +532,19 @@ footer{background:linear-gradient(135deg,#0d2b0d,#1a3a1a);
   <p class="footer-copy">© 2025 KC Homeopathics · Todos los derechos reservados · Bienestar Natural</p>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ═══════════════════════════════════════════════════════════════
+// CONFIGURACIÓN DE SUPABASE — Reemplaza con tus credenciales
+// ═══════════════════════════════════════════════════════════════
+const SUPABASE_URL    = 'https://adzwkeqfeltcavsdrblb.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_LgGAmfRkYZ20FWc9jET95g_RIf9S3rL';
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Cache en memoria de productos (se sincroniza con Supabase)
+let _productsCache = [];
+let _imagesCache = {};
+</script>
 <script>
 const WA_NUM = '526675819891';
 let adminLoggedIn = false;
@@ -625,14 +638,79 @@ const DEFAULT_PRODUCTS = [
    benefits:['Apoyo natural','Bienestar integral','Fórmula segura','Calidad garantizada']},
 ];
 
-function getProducts(){
-  const saved = localStorage.getItem('kc_products');
-  if(saved) return JSON.parse(saved);
-  localStorage.setItem('kc_products', JSON.stringify(DEFAULT_PRODUCTS));
-  return DEFAULT_PRODUCTS;
+// ═══════════════════════════════════════════════════════════════
+// FUNCIONES DE PRODUCTOS — Ahora con Supabase
+// ═══════════════════════════════════════════════════════════════
+
+// Carga inicial: trae productos del backend; si no hay, inserta los DEFAULT
+async function loadProductsFromBackend(){
+  try{
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: true });
+    if(error) throw error;
+
+    if(!data || data.length === 0){
+      // Primera vez: poblar la tabla con productos por defecto
+      const { error: insErr } = await supabase.from('products').insert(DEFAULT_PRODUCTS);
+      if(insErr) throw insErr;
+      _productsCache = [...DEFAULT_PRODUCTS];
+    } else {
+      _productsCache = data;
+    }
+
+    // Cargar imágenes asociadas
+    const { data: imgs } = await supabase.from('product_images').select('*');
+    _imagesCache = {};
+    (imgs||[]).forEach(r => { _imagesCache[r.product_id] = r.image_url; });
+
+    return _productsCache;
+  } catch(err){
+    console.error('Error cargando productos:', err);
+    showToast('Error conectando con el servidor','err');
+    _productsCache = [...DEFAULT_PRODUCTS]; // Fallback
+    return _productsCache;
+  }
 }
+
+// Lectura síncrona (usa cache) — el resto del código sigue funcionando igual
+function getProducts(){
+  return _productsCache;
+}
+
+// Guardar UN producto (insertar o actualizar)
+async function saveProductBackend(product){
+  try{
+    const { error } = await supabase
+      .from('products')
+      .upsert(product, { onConflict: 'id' });
+    if(error) throw error;
+    return true;
+  } catch(err){
+    console.error('Error guardando producto:', err);
+    showToast('Error al guardar en el servidor','err');
+    return false;
+  }
+}
+
+// Eliminar producto del backend
+async function deleteProductBackend(id){
+  try{
+    await supabase.from('product_images').delete().eq('product_id', id);
+    const { error } = await supabase.from('products').delete().eq('id', id);
+    if(error) throw error;
+    return true;
+  } catch(err){
+    console.error('Error eliminando producto:', err);
+    showToast('Error al eliminar del servidor','err');
+    return false;
+  }
+}
+
+// Compatibilidad: ya no se usa, pero algunas funciones aún lo llaman
 function saveProducts(products){
-  localStorage.setItem('kc_products', JSON.stringify(products));
+  _productsCache = products;
 }
 
 // SVG dropper bottle
@@ -664,24 +742,50 @@ function bottleSVG(productId, size=90){
     : `<div style="width:100%;height:200px;display:flex;align-items:center;justify-content:center;background:#0d2b0d;color:var(--teal);border-radius:12px;font-size:13px;">Sin imagen</div>`;
 }
 function getCustomImage(productId){
-  try{
-    const imgs = JSON.parse(localStorage.getItem('kc_images')||'{}');
-    return imgs[productId] || '';
-  }catch(e){return '';}
+  return _imagesCache[productId] || '';
 }
-function saveCustomImage(productId, dataUrl){
+
+// Sube imagen a Supabase Storage y guarda URL en tabla product_images
+async function saveCustomImage(productId, dataUrl){
   try{
-    const imgs = JSON.parse(localStorage.getItem('kc_images')||'{}');
-    imgs[productId] = dataUrl;
-    localStorage.setItem('kc_images', JSON.stringify(imgs));
-  }catch(e){}
+    // Convertir dataURL (base64) a Blob
+    const res = await fetch(dataUrl);
+    const blob = await res.blob();
+    const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg','jpg');
+    const path = `${productId}-${Date.now()}.${ext}`;
+
+    // Subir al bucket "product-images"
+    const { error: upErr } = await supabase.storage
+      .from('product-images')
+      .upload(path, blob, { upsert: true, contentType: blob.type });
+    if(upErr) throw upErr;
+
+    // Obtener URL pública
+    const { data: pub } = supabase.storage.from('product-images').getPublicUrl(path);
+    const url = pub.publicUrl;
+
+    // Guardar relación producto ↔ imagen
+    const { error: dbErr } = await supabase
+      .from('product_images')
+      .upsert({ product_id: productId, image_url: url }, { onConflict: 'product_id' });
+    if(dbErr) throw dbErr;
+
+    _imagesCache[productId] = url;
+    return url;
+  } catch(err){
+    console.error('Error subiendo imagen:', err);
+    showToast('Error al subir la imagen','err');
+    return '';
+  }
 }
-function deleteCustomImage(productId){
+
+async function deleteCustomImage(productId){
   try{
-    const imgs = JSON.parse(localStorage.getItem('kc_images')||'{}');
-    delete imgs[productId];
-    localStorage.setItem('kc_images', JSON.stringify(imgs));
-  }catch(e){}
+    await supabase.from('product_images').delete().eq('product_id', productId);
+    delete _imagesCache[productId];
+  } catch(err){
+    console.error('Error eliminando imagen:', err);
+  }
 }
 
 function benefitIcon(){ return `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>`; }
@@ -928,7 +1032,7 @@ function openProductForm(pid=null){
   document.getElementById('admin-form-view').style.display='block';
 }
 
-function saveProduct(){
+async function saveProduct(){
   const name = document.getElementById('f-name').value.trim();
   const price = parseFloat(document.getElementById('f-price').value);
   if(!name || isNaN(price)){
@@ -948,25 +1052,37 @@ function saveProduct(){
     category: document.getElementById('f-category').value || 'homeopatico',
     benefits: document.getElementById('f-benefits').value.split(',').map(b=>b.trim()).filter(Boolean)
   };
-  // Guardar imagen si se subió una
+
+  // 1) Guardar producto en Supabase
+  const ok = await saveProductBackend(newProduct);
+  if(!ok) return;
+
+  // 2) Si subió imagen nueva, subirla al Storage
   const imgData = document.getElementById('f-img-data').value;
-  if(imgData) saveCustomImage(id, imgData);
+  if(imgData && imgData.startsWith('data:')) {
+    await saveCustomImage(id, imgData);
+  }
+
+  // 3) Actualizar cache local
   if(editingId){
     const idx = products.findIndex(p=>p.id===editingId);
-    products[idx] = newProduct;
+    if(idx >= 0) products[idx] = newProduct;
   } else {
     products.push(newProduct);
   }
   saveProducts(products);
+
   renderCards();
-  closeFormModalBtn(); // vuelve a la tabla
+  closeFormModalBtn();
   showToast(editingId ? 'Producto actualizado ✓' : 'Producto agregado ✓');
 }
 
-function deleteProduct(id){
+async function deleteProduct(id){
   if(!confirm('¿Eliminar este producto?')) return;
+  const ok = await deleteProductBackend(id);
+  if(!ok) return;
   const products = getProducts().filter(p=>p.id!==id);
-  deleteCustomImage(id);
+  await deleteCustomImage(id);
   saveProducts(products);
   renderAdminTable();
   renderCards();
@@ -989,7 +1105,13 @@ function showToast(msg, type='ok'){
 }
 
 // Init
-document.addEventListener('DOMContentLoaded', ()=>{
+document.addEventListener('DOMContentLoaded', async ()=>{
+  // Mostrar mensaje de carga
+  const grid = document.getElementById('productsGrid');
+  if(grid) grid.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--gray);font-size:15px">Cargando productos…</div>`;
+
+  // Traer productos desde el backend antes de renderizar
+  await loadProductsFromBackend();
   renderCards();
 });
 </script>
